@@ -396,6 +396,17 @@ class ModelErrorBoundary extends React.Component<{ children: ReactNode; fileName
   }
 }
 
+class BackgroundErrorBoundary extends React.Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) return null; 
+    return this.props.children;
+  }
+}
+
 const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<(() => void) | null> }> = ({ captureRef }) => {
   const { gl, scene, camera } = useThree();
 
@@ -432,15 +443,19 @@ const ImageBackground: React.FC<{ url: string; is360: boolean }> = ({ url, is360
       texture.mapping = THREE.UVMapping;
     }
     texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
     
     // Apply to background
     scene.background = texture;
-    // Optional: Update environment for better reflection integration if 360
-    // if (is360) scene.environment = texture;
+    
+    // Update environment for proper reflection integration if 360
+    if (is360) {
+        scene.environment = texture;
+    }
 
     return () => {
       scene.background = null;
-      // if (is360) scene.environment = null; 
+      scene.environment = null; 
     };
   }, [texture, is360, scene]);
 
@@ -453,14 +468,17 @@ const BackgroundHandler: React.FC<{ color: string; image: string | null; is360: 
   useEffect(() => {
     if (!image) {
       scene.background = new THREE.Color(color);
+      scene.environment = null; // Clear environment if reverting to color
     }
   }, [color, image, scene]);
 
   if (image) {
     return (
-        <Suspense fallback={null}>
-            <ImageBackground url={image} is360={is360} />
-        </Suspense>
+        <BackgroundErrorBoundary>
+            <Suspense fallback={null}>
+                <ImageBackground url={image} is360={is360} />
+            </Suspense>
+        </BackgroundErrorBoundary>
     );
   }
   return null;
@@ -524,7 +542,8 @@ const Scene: React.FC<SceneProps> = ({
         <pointLight position={[-5, 5, -5]} intensity={0.5 * brightness} color="#818cf8" />
         <directionalLight position={[0, 5, 5]} intensity={1 * brightness} />
         
-        <Environment preset="city" />
+        {/* Only use default city environment if we aren't using a custom 360 map which acts as environment */}
+        {!(backgroundImage && backgroundIs360) && <Environment preset="city" />}
 
         {models.map(model => (
              <ModelErrorBoundary key={model.id} fileName={model.fileName}>
