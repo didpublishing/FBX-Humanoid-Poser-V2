@@ -166,7 +166,9 @@ const Model: React.FC<ModelProps> = ({
 
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         
-        materials.forEach((mat) => {
+        materials.forEach((m) => {
+          const mat = m as THREE.MeshStandardMaterial; // Cast to access common properties
+
           if (!mat.userData.originalColor) {
              mat.userData.originalColor = mat.color ? mat.color.getHex() : 0xffffff;
           }
@@ -242,9 +244,6 @@ const Model: React.FC<ModelProps> = ({
         quaternion: [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w],
         scale: [b.scale.x, b.scale.y, b.scale.z]
     }));
-    
-    // Reset Camera Focus only on first load of first model (optional logic, but good for UX)
-    // We won't force it here to allow adding models without jarring camera jumps.
   }, [scene, id, onBonesDetected]);
 
   // Expose Pose Handling Methods
@@ -378,6 +377,25 @@ class SceneErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBounda
   }
 }
 
+class ModelErrorBoundary extends React.Component<{ children: ReactNode; fileName: string }, { hasError: boolean }> {
+  state = { hasError: false };
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Html position={[0, 1.5, 0]} center>
+          <div className="bg-red-900/90 text-red-200 px-3 py-2 rounded-lg text-xs border border-red-500 shadow-lg flex items-center gap-2 pointer-events-none select-none">
+            <span>⚠️ Failed to load {this.props.fileName}</span>
+          </div>
+        </Html>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<(() => void) | null> }> = ({ captureRef }) => {
   const { gl, scene, camera } = useThree();
 
@@ -440,24 +458,25 @@ const Scene: React.FC<SceneProps> = ({
         
         <Environment preset="city" />
 
-        <Suspense fallback={<Html center><div className="flex flex-col items-center gap-2"><div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div><div className="text-indigo-200 font-mono text-sm">Loading Model...</div></div></Html>}>
-            {models.map(model => (
-                <Model 
-                    key={model.id}
-                    id={model.id}
-                    url={model.url}
-                    visible={model.visible}
-                    onBonesDetected={onBonesDetected} 
-                    selectedBoneId={selectedBoneId}
-                    setSelectedBoneId={setSelectedBoneId}
-                    controlMode={controlMode}
-                    viewMode={viewMode}
-                    showOverlays={showOverlays}
-                    registerPoseHandler={registerPoseHandler}
-                    unregisterPoseHandler={unregisterPoseHandler}
-                />
-            ))}
-        </Suspense>
+        {models.map(model => (
+             <ModelErrorBoundary key={model.id} fileName={model.fileName}>
+                <Suspense fallback={<Html position={[0, 1, 0]} center><div className="text-xs text-indigo-300 bg-black/50 px-2 py-1 rounded animate-pulse pointer-events-none">Loading {model.fileName}...</div></Html>}>
+                    <Model 
+                        id={model.id}
+                        url={model.url}
+                        visible={model.visible}
+                        onBonesDetected={onBonesDetected} 
+                        selectedBoneId={selectedBoneId}
+                        setSelectedBoneId={setSelectedBoneId}
+                        controlMode={controlMode}
+                        viewMode={viewMode}
+                        showOverlays={showOverlays}
+                        registerPoseHandler={registerPoseHandler}
+                        unregisterPoseHandler={unregisterPoseHandler}
+                    />
+                </Suspense>
+            </ModelErrorBoundary>
+        ))}
 
         <OrbitControls 
             makeDefault 

@@ -55,6 +55,8 @@ const App: React.FC = () => {
       setModels(prev => [...prev, newModel]);
       // Don't reset selectedBoneId to allow multi-model workflow
     }
+    // Reset the input value to allow selecting the same file again if needed
+    event.target.value = ''; 
   };
 
   const handleBonesDetected = useCallback((modelId: string, detectedBones: BoneInfo[]) => {
@@ -70,10 +72,16 @@ const App: React.FC = () => {
   };
 
   const handleDeleteModel = (modelId: string) => {
+      // Clean up the object URL to avoid memory leaks
+      const model = models.find(m => m.id === modelId);
+      if (model) {
+          URL.revokeObjectURL(model.url);
+      }
+
       setModels(prev => prev.filter(m => m.id !== modelId));
       poseHandlersRef.current.delete(modelId);
+      
       // If selected bone belonged to this model, deselect it
-      const model = models.find(m => m.id === modelId);
       if (model && model.bones.some(b => b.id === selectedBoneId)) {
           setSelectedBoneId(null);
       }
