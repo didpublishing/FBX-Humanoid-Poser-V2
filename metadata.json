@@ -1,0 +1,5 @@
+{
+  "name": "Mixamo Pose Master",
+  "description": "Import Mixamo FBX characters, automatically detect skeletal joints, and pose them using intuitive 3D controls. Features AI-powered pose suggestions.",
+  "requestFramePermissions": []
+}
