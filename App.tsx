@@ -1,28 +1,27 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import Scene from './components/Scene';
 import BoneList from './components/BoneList';
 import AIPanel from './components/AIPanel';
 import PoseLibrary from './components/PoseLibrary';
-import { BoneInfo, ControlMode, ViewMode, SavedPose, PoseHandler } from './types';
-import { Upload, Move, Rotate3D, MousePointer2, Box, Grid3x3, Bone, Eye, EyeOff, Sun, Camera, Sparkles, Save } from 'lucide-react';
+import { BoneInfo, ControlMode, ViewMode, SavedPose, PoseHandler, LoadedModel } from './types';
+import { Upload, Move, Rotate3D, MousePointer2, Box, Grid3x3, Bone, Eye, EyeOff, Sun, Camera, Sparkles, Save, RefreshCcw } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [fileUrl, setFileUrl] = useState<string | null>(null);
-  const [bones, setBones] = useState<BoneInfo[]>([]);
+  const [models, setModels] = useState<LoadedModel[]>([]);
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   const [controlMode, setControlMode] = useState<ControlMode>(ControlMode.ROTATE);
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.SOLID);
   const [showOverlays, setShowOverlays] = useState<boolean>(true);
   const [brightness, setBrightness] = useState<number>(1.0);
-  const [fileName, setFileName] = useState<string>("");
   
   const [activeTab, setActiveTab] = useState<'ai' | 'poses'>('ai');
   const [savedPoses, setSavedPoses] = useState<SavedPose[]>([]);
 
   // Ref to trigger screenshot function in Scene
   const captureRef = useRef<(() => void) | null>(null);
-  // Ref to handle pose get/set operations
-  const poseHandlerRef = useRef<PoseHandler | null>(null);
+  
+  // Ref to hold pose handlers for each model
+  const poseHandlersRef = useRef<Map<string, PoseHandler>>(new Map());
 
   // Load poses from localStorage on mount
   useEffect(() => {
@@ -45,17 +44,55 @@ const App: React.FC = () => {
     const file = event.target.files?.[0];
     if (file) {
       const url = URL.createObjectURL(file);
-      setFileUrl(url);
-      setFileName(file.name);
-      // Reset state
-      setBones([]);
-      setSelectedBoneId(null);
+      const newModel: LoadedModel = {
+          id: crypto.randomUUID(),
+          url,
+          fileName: file.name,
+          bones: [],
+          visible: true
+      };
+      
+      setModels(prev => [...prev, newModel]);
+      // Don't reset selectedBoneId to allow multi-model workflow
     }
   };
 
-  const handleBonesDetected = useCallback((detectedBones: BoneInfo[]) => {
-    setBones(detectedBones);
+  const handleBonesDetected = useCallback((modelId: string, detectedBones: BoneInfo[]) => {
+    setModels(prev => prev.map(m => 
+        m.id === modelId ? { ...m, bones: detectedBones } : m
+    ));
   }, []);
+
+  const handleToggleModelVisibility = (modelId: string) => {
+      setModels(prev => prev.map(m => 
+          m.id === modelId ? { ...m, visible: !m.visible } : m
+      ));
+  };
+
+  const handleDeleteModel = (modelId: string) => {
+      setModels(prev => prev.filter(m => m.id !== modelId));
+      poseHandlersRef.current.delete(modelId);
+      // If selected bone belonged to this model, deselect it
+      const model = models.find(m => m.id === modelId);
+      if (model && model.bones.some(b => b.id === selectedBoneId)) {
+          setSelectedBoneId(null);
+      }
+  };
+
+  const registerPoseHandler = useCallback((modelId: string, handler: PoseHandler) => {
+      poseHandlersRef.current.set(modelId, handler);
+  }, []);
+
+  const unregisterPoseHandler = useCallback((modelId: string) => {
+      poseHandlersRef.current.delete(modelId);
+  }, []);
+
+  // Helper to find which model owns the selected bone
+  const activeModelId = useMemo(() => {
+      if (!selectedBoneId) return models.length > 0 ? models[models.length - 1].id : null;
+      const found = models.find(m => m.bones.some(b => b.id === selectedBoneId));
+      return found ? found.id : (models.length > 0 ? models[0].id : null);
+  }, [models, selectedBoneId]);
 
   const handleTakeScreenshot = () => {
     if (captureRef.current) {
@@ -64,11 +101,12 @@ const App: React.FC = () => {
   };
 
   const handleSavePose = (name: string) => {
-      if (poseHandlerRef.current) {
-          const transforms = poseHandlerRef.current.getPose();
+      if (activeModelId && poseHandlersRef.current.has(activeModelId)) {
+          const handler = poseHandlersRef.current.get(activeModelId)!;
+          const transforms = handler.getPose();
           const newPose: SavedPose = {
               id: crypto.randomUUID(),
-              name,
+              name: `${name} (${models.find(m=>m.id===activeModelId)?.fileName})`,
               date: Date.now(),
               transforms
           };
@@ -77,8 +115,11 @@ const App: React.FC = () => {
   };
 
   const handleLoadPose = (pose: SavedPose) => {
-      if (poseHandlerRef.current) {
-          poseHandlerRef.current.setPose(pose.transforms);
+      // If we have an active model, try to apply it there.
+      // Or we could try to apply to ALL models? For now, active model is safer.
+      if (activeModelId && poseHandlersRef.current.has(activeModelId)) {
+          const handler = poseHandlersRef.current.get(activeModelId)!;
+          handler.setPose(pose.transforms);
       }
   };
 
@@ -87,18 +128,28 @@ const App: React.FC = () => {
   };
 
   const handleResetPose = () => {
-      if (poseHandlerRef.current) {
-          poseHandlerRef.current.resetPose();
+      if (activeModelId && poseHandlersRef.current.has(activeModelId)) {
+          poseHandlersRef.current.get(activeModelId)!.resetPose();
       }
   };
+
+  // Aggregate all bones for AI context (taking the first model or active one)
+  const aiContextBones = useMemo(() => {
+      if (activeModelId) {
+          return models.find(m => m.id === activeModelId)?.bones.map(b => b.name) || [];
+      }
+      return models.length > 0 ? models[0].bones.map(b => b.name) : [];
+  }, [models, activeModelId]);
 
   return (
     <div className="flex h-screen w-screen bg-gray-900 overflow-hidden font-sans">
       {/* Left Sidebar: Bone List */}
       <BoneList 
-        bones={bones} 
+        models={models} 
         selectedBoneId={selectedBoneId} 
         onSelectBone={setSelectedBoneId} 
+        onToggleModelVisibility={handleToggleModelVisibility}
+        onDeleteModel={handleDeleteModel}
       />
 
       {/* Center: Viewport & Toolbar */}
@@ -115,7 +166,7 @@ const App: React.FC = () => {
 
                 <label className="cursor-pointer flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-md text-xs font-medium transition-colors text-gray-200 border border-gray-600">
                     <Upload className="w-4 h-4" />
-                    {fileName || "Import FBX"}
+                    Import FBX
                     <input 
                         type="file" 
                         accept=".fbx" 
@@ -189,6 +240,14 @@ const App: React.FC = () => {
                    />
                 </div>
 
+                <button 
+                    onClick={handleResetPose}
+                    className="p-2 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+                    title="Reset Pose (Active Model)"
+                >
+                    <RefreshCcw className="w-5 h-5" />
+                </button>
+
                 <button
                     onClick={handleTakeScreenshot}
                     className="p-2 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
@@ -201,7 +260,7 @@ const App: React.FC = () => {
 
         {/* 3D Canvas */}
         <div className="flex-1 relative bg-[#111827]">
-            {!fileUrl && (
+            {models.length === 0 && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 pointer-events-none">
                     <Upload className="w-16 h-16 mb-4 opacity-20" />
                     <p className="text-lg font-light opacity-50">Drop an FBX file to start</p>
@@ -209,7 +268,7 @@ const App: React.FC = () => {
                 </div>
             )}
             <Scene 
-                fileUrl={fileUrl} 
+                models={models} 
                 onBonesDetected={handleBonesDetected}
                 selectedBoneId={selectedBoneId}
                 setSelectedBoneId={setSelectedBoneId}
@@ -218,11 +277,12 @@ const App: React.FC = () => {
                 showOverlays={showOverlays}
                 brightness={brightness}
                 captureRef={captureRef}
-                poseHandlerRef={poseHandlerRef}
+                registerPoseHandler={registerPoseHandler}
+                unregisterPoseHandler={unregisterPoseHandler}
             />
             
             {/* Quick Hint Overlay */}
-            {showOverlays && (
+            {showOverlays && models.length > 0 && (
                 <div className="absolute bottom-4 left-4 pointer-events-none">
                     <div className="bg-black/50 backdrop-blur-sm p-3 rounded-lg border border-white/10 text-xs text-gray-400 space-y-1">
                         <div className="flex items-center gap-2">
@@ -230,6 +290,9 @@ const App: React.FC = () => {
                         </div>
                         <div className="flex items-center gap-2">
                             <Rotate3D className="w-3 h-3" /> <span>Rotate to pose</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <RefreshCcw className="w-3 h-3" /> <span>Reset pose</span>
                         </div>
                         <div className="flex items-center gap-2">
                             <Camera className="w-3 h-3" /> <span>Take picture</span>
@@ -269,7 +332,7 @@ const App: React.FC = () => {
           {/* Content */}
           <div className="flex-1 overflow-hidden">
               {activeTab === 'ai' ? (
-                  <AIPanel boneNames={bones.map(b => b.name)} />
+                  <AIPanel boneNames={aiContextBones} />
               ) : (
                   <PoseLibrary 
                     savedPoses={savedPoses}
@@ -277,7 +340,7 @@ const App: React.FC = () => {
                     onLoadPose={handleLoadPose}
                     onDeletePose={handleDeletePose}
                     onResetPose={handleResetPose}
-                    hasActiveModel={!!fileUrl}
+                    hasActiveModel={models.length > 0}
                   />
               )}
           </div>

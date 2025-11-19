@@ -42,3 +42,11 @@ export interface PoseHandler {
     setPose: (transforms: BoneTransform[]) => void;
     resetPose: () => void;
 }
+
+export interface LoadedModel {
+    id: string;
+    url: string;
+    fileName: string;
+    bones: BoneInfo[];
+    visible: boolean;
+}

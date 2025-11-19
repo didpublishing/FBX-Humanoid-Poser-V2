@@ -5,7 +5,7 @@ import { OrbitControls, TransformControls, Environment, ContactShadows, Html } f
 import * as THREE from 'three';
 import { SkeletonUtils } from 'three-stdlib';
 import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-import { BoneInfo, ControlMode, ViewMode, PoseHandler, BoneTransform } from '../types';
+import { BoneInfo, ControlMode, ViewMode, PoseHandler, BoneTransform, LoadedModel } from '../types';
 
 interface JointMarkerProps {
     bone: THREE.Bone;
@@ -60,17 +60,32 @@ const JointMarker: React.FC<JointMarkerProps> = ({ bone, isSelected, onSelect })
 };
 
 interface ModelProps {
+  id: string;
   url: string;
-  onBonesDetected: (bones: BoneInfo[]) => void;
+  visible: boolean;
+  onBonesDetected: (modelId: string, bones: BoneInfo[]) => void;
   selectedBoneId: string | null;
   setSelectedBoneId: (id: string | null) => void;
   controlMode: ControlMode;
   viewMode: ViewMode;
   showOverlays: boolean;
-  poseHandlerRef?: React.MutableRefObject<PoseHandler | null>;
+  registerPoseHandler: (modelId: string, handler: PoseHandler) => void;
+  unregisterPoseHandler: (modelId: string) => void;
 }
 
-const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, setSelectedBoneId, controlMode, viewMode, showOverlays, poseHandlerRef }) => {
+const Model: React.FC<ModelProps> = ({ 
+    id, 
+    url, 
+    visible, 
+    onBonesDetected, 
+    selectedBoneId, 
+    setSelectedBoneId, 
+    controlMode, 
+    viewMode, 
+    showOverlays, 
+    registerPoseHandler,
+    unregisterPoseHandler
+}) => {
   const fbx = useLoader(FBXLoader, url);
   const { camera, controls } = useThree();
   const [bones, setBones] = useState<THREE.Bone[]>([]);
@@ -100,20 +115,18 @@ const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, set
         if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
         
         // Expand box by the mesh in its T-Pose/Rest state
-        // Using expandByObject accounts for the mesh's world transform relative to the clone root
         box.expandByObject(mesh);
         hasMeshes = true;
       }
     });
 
-    // Fallback if no meshes (e.g. pure skeleton file)
+    // Fallback if no meshes
     if (!hasMeshes) {
         box.setFromObject(clone);
     }
 
     // Safety check for valid box
     if (box.isEmpty() || !isFinite(box.min.x)) {
-        // Default to a reasonable human-sized box if calculation fails
         box.min.set(-0.5, 0, -0.5);
         box.max.set(0.5, 1.8, 0.5);
     }
@@ -131,10 +144,6 @@ const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, set
     clone.scale.set(scaleFactor, scaleFactor, scaleFactor);
 
     // 5. Center the model on the floor (Y=0)
-    // We need to shift the internal content so that the bottom of the mesh sits at 0,0,0 world space
-    // The box.min.y is the bottom of the mesh in LOCAL space (before scaling)
-    // We apply the inverse of the center, but aligned to the bottom.
-    
     clone.position.x = -center.x * scaleFactor;
     clone.position.y = -box.min.y * scaleFactor; // Align bottom to 0
     clone.position.z = -center.z * scaleFactor;
@@ -148,10 +157,11 @@ const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, set
   useEffect(() => {
     if (!scene) return;
 
+    scene.visible = visible;
+
     scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        // Important: Prevent culling issues when resizing/animating
         mesh.frustumCulled = false;
 
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -191,7 +201,7 @@ const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, set
         });
       }
     });
-  }, [scene, viewMode]);
+  }, [scene, viewMode, visible]);
 
   // Bone detection and Initial Pose Capture
   useLayoutEffect(() => {
@@ -220,7 +230,10 @@ const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, set
     });
 
     setBones(detectedBones);
-    onBonesDetected(boneInfos);
+    // Only notify if we actually found bones to avoid loops, though dependency array handles most
+    if (detectedBones.length > 0) {
+        onBonesDetected(id, boneInfos);
+    }
 
     // Capture Initial Pose
     initialPoseRef.current = detectedBones.map(b => ({
@@ -229,61 +242,56 @@ const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, set
         quaternion: [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w],
         scale: [b.scale.x, b.scale.y, b.scale.z]
     }));
-
-    // Reset Camera
-    if (camera && controls) {
-        const orbitControls = controls as unknown as OrbitControlsImpl;
-        orbitControls.target.set(0, 1.25, 0);
-        camera.position.set(2, 1.5, 4);
-        camera.lookAt(0, 1.25, 0);
-        orbitControls.update();
-    }
-  }, [scene, onBonesDetected, camera, controls]);
+    
+    // Reset Camera Focus only on first load of first model (optional logic, but good for UX)
+    // We won't force it here to allow adding models without jarring camera jumps.
+  }, [scene, id, onBonesDetected]);
 
   // Expose Pose Handling Methods
   useEffect(() => {
-    if (poseHandlerRef) {
-        poseHandlerRef.current = {
-            getPose: () => {
-                return bones.map(b => ({
-                    name: b.name,
-                    position: [b.position.x, b.position.y, b.position.z],
-                    quaternion: [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w],
-                    scale: [b.scale.x, b.scale.y, b.scale.z]
-                }));
-            },
-            setPose: (transforms: BoneTransform[]) => {
-                transforms.forEach(t => {
-                    const bone = bones.find(b => b.name === t.name);
-                    if (bone) {
-                        bone.position.set(...t.position);
-                        bone.quaternion.set(...t.quaternion);
-                        bone.scale.set(...t.scale);
-                        bone.updateMatrix();
-                    }
-                });
-            },
-            resetPose: () => {
-                initialPoseRef.current.forEach(t => {
-                    const bone = bones.find(b => b.name === t.name);
-                    if (bone) {
-                        bone.position.set(...t.position);
-                        bone.quaternion.set(...t.quaternion);
-                        bone.scale.set(...t.scale);
-                        bone.updateMatrix();
-                    }
-                });
-            }
-        };
-    }
-  }, [bones, poseHandlerRef]);
+    const handler: PoseHandler = {
+        getPose: () => {
+            return bones.map(b => ({
+                name: b.name,
+                position: [b.position.x, b.position.y, b.position.z],
+                quaternion: [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w],
+                scale: [b.scale.x, b.scale.y, b.scale.z]
+            }));
+        },
+        setPose: (transforms: BoneTransform[]) => {
+            transforms.forEach(t => {
+                const bone = bones.find(b => b.name === t.name);
+                if (bone) {
+                    bone.position.set(...t.position);
+                    bone.quaternion.set(...t.quaternion);
+                    bone.scale.set(...t.scale);
+                    bone.updateMatrix();
+                }
+            });
+        },
+        resetPose: () => {
+            initialPoseRef.current.forEach(t => {
+                const bone = bones.find(b => b.name === t.name);
+                if (bone) {
+                    bone.position.set(...t.position);
+                    bone.quaternion.set(...t.quaternion);
+                    bone.scale.set(...t.scale);
+                    bone.updateMatrix();
+                }
+            });
+        }
+    };
+
+    registerPoseHandler(id, handler);
+    return () => unregisterPoseHandler(id);
+  }, [bones, id, registerPoseHandler, unregisterPoseHandler]);
 
   const selectedObject = useMemo(() => {
+    if (!visible) return null;
     return bones.find(b => b.uuid === selectedBoneId);
-  }, [bones, selectedBoneId]);
+  }, [bones, selectedBoneId, visible]);
 
   // Transform Controls dragging logic
-  // Using explicit type for the ref to avoid 'any'
   const controlsRef = useRef<React.ElementRef<typeof TransformControls>>(null);
   useEffect(() => {
     if (controlsRef.current) {
@@ -293,26 +301,22 @@ const Model: React.FC<ModelProps> = ({ url, onBonesDetected, selectedBoneId, set
                 orbitControls.enabled = !event.value;
             }
         };
-        // @ts-ignore - TransformControls types in drei can be slightly mismatched with strict event listeners
+        // @ts-ignore
         controlsRef.current.addEventListener('dragging-changed', callback);
         // @ts-ignore
         return () => controlsRef.current?.removeEventListener('dragging-changed', callback);
     }
   }, [controls, selectedObject]);
 
-  const helper = useMemo(() => {
-     return new THREE.SkeletonHelper(scene);
-  }, [scene]);
-
   return (
     <>
       <primitive object={scene} dispose={null} />
       
-      {viewMode === ViewMode.RIG && (
-        <primitive object={helper} />
+      {viewMode === ViewMode.RIG && visible && (
+        <primitive object={new THREE.SkeletonHelper(scene)} />
       )}
 
-      {showOverlays && bones.map((bone) => (
+      {showOverlays && visible && bones.map((bone) => (
              createPortal(
                 <JointMarker 
                     bone={bone} 
@@ -358,7 +362,7 @@ class SceneErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBounda
         <Html center>
           <div className="bg-red-900/90 text-white p-6 rounded-xl border border-red-500 shadow-2xl max-w-sm text-center pointer-events-auto">
             <div className="text-4xl mb-2">⚠️</div>
-            <h3 className="font-bold text-lg mb-2">Could not load model</h3>
+            <h3 className="font-bold text-lg mb-2">Error Loading Scene</h3>
             <p className="text-sm text-red-200 mb-4">{this.state.error}</p>
             <button 
               onClick={() => window.location.reload()}
@@ -374,20 +378,14 @@ class SceneErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBounda
   }
 }
 
-// Helper component to handle screenshot logic within the Canvas context
 const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<(() => void) | null> }> = ({ captureRef }) => {
   const { gl, scene, camera } = useThree();
 
   useEffect(() => {
     if (captureRef) {
       captureRef.current = () => {
-        // Render the scene explicitly to ensure we catch the latest state
         gl.render(scene, camera);
-        
-        // Capture data from the canvas
         const dataUrl = gl.domElement.toDataURL('image/png');
-        
-        // Trigger download
         const link = document.createElement('a');
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         link.setAttribute('download', `pose-master-snap-${timestamp}.png`);
@@ -395,8 +393,6 @@ const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<(() => v
         link.click();
       };
     }
-    
-    // Cleanup
     return () => {
       if (captureRef) captureRef.current = null;
     };
@@ -406,8 +402,8 @@ const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<(() => v
 };
 
 interface SceneProps {
-  fileUrl: string | null;
-  onBonesDetected: (bones: BoneInfo[]) => void;
+  models: LoadedModel[];
+  onBonesDetected: (modelId: string, bones: BoneInfo[]) => void;
   selectedBoneId: string | null;
   setSelectedBoneId: (id: string | null) => void;
   controlMode: ControlMode;
@@ -415,12 +411,24 @@ interface SceneProps {
   showOverlays: boolean;
   brightness: number;
   captureRef?: React.MutableRefObject<(() => void) | null>;
-  poseHandlerRef?: React.MutableRefObject<PoseHandler | null>;
+  registerPoseHandler: (modelId: string, handler: PoseHandler) => void;
+  unregisterPoseHandler: (modelId: string) => void;
 }
 
-const Scene: React.FC<SceneProps> = ({ fileUrl, onBonesDetected, selectedBoneId, setSelectedBoneId, controlMode, viewMode, showOverlays, brightness, captureRef, poseHandlerRef }) => {
+const Scene: React.FC<SceneProps> = ({ 
+    models, 
+    onBonesDetected, 
+    selectedBoneId, 
+    setSelectedBoneId, 
+    controlMode, 
+    viewMode, 
+    showOverlays, 
+    brightness, 
+    captureRef,
+    registerPoseHandler,
+    unregisterPoseHandler
+}) => {
   return (
-    // preserveDrawingBuffer is critical for toDataURL to work synchronously after user interaction
     <Canvas shadows dpr={[1, 2]} camera={{ position: [2, 1.5, 4], fov: 45 }} gl={{ preserveDrawingBuffer: true }}>
       <SceneErrorBoundary>
         <color attach="background" args={['#111827']} />
@@ -432,20 +440,23 @@ const Scene: React.FC<SceneProps> = ({ fileUrl, onBonesDetected, selectedBoneId,
         
         <Environment preset="city" />
 
-        <Suspense fallback={<Html center><div className="flex flex-col items-center gap-2"><div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div><div className="text-indigo-200 font-mono text-sm">Processing Rig...</div></div></Html>}>
-            {fileUrl && (
+        <Suspense fallback={<Html center><div className="flex flex-col items-center gap-2"><div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div><div className="text-indigo-200 font-mono text-sm">Loading Model...</div></div></Html>}>
+            {models.map(model => (
                 <Model 
-                    key={fileUrl} 
-                    url={fileUrl} 
+                    key={model.id}
+                    id={model.id}
+                    url={model.url}
+                    visible={model.visible}
                     onBonesDetected={onBonesDetected} 
                     selectedBoneId={selectedBoneId}
                     setSelectedBoneId={setSelectedBoneId}
                     controlMode={controlMode}
                     viewMode={viewMode}
                     showOverlays={showOverlays}
-                    poseHandlerRef={poseHandlerRef}
+                    registerPoseHandler={registerPoseHandler}
+                    unregisterPoseHandler={unregisterPoseHandler}
                 />
-            )}
+            ))}
         </Suspense>
 
         <OrbitControls 
