@@ -419,6 +419,65 @@ const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<(() => v
   return null;
 };
 
+// --- Background Components ---
+
+const ImageBackground: React.FC<{ url: string; is360: boolean }> = ({ url, is360 }) => {
+  const texture = useLoader(THREE.TextureLoader, url);
+  const { scene } = useThree();
+
+  useEffect(() => {
+    if (is360) {
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+    } else {
+      texture.mapping = THREE.UVMapping;
+    }
+    texture.colorSpace = THREE.SRGBColorSpace;
+    
+    // Apply to background
+    scene.background = texture;
+    // Optional: Update environment for better reflection integration if 360
+    // if (is360) scene.environment = texture;
+
+    return () => {
+      scene.background = null;
+      // if (is360) scene.environment = null; 
+    };
+  }, [texture, is360, scene]);
+
+  return null;
+};
+
+const BackgroundHandler: React.FC<{ color: string; image: string | null; is360: boolean }> = ({ color, image, is360 }) => {
+  const { scene } = useThree();
+
+  useEffect(() => {
+    if (!image) {
+      scene.background = new THREE.Color(color);
+    }
+  }, [color, image, scene]);
+
+  if (image) {
+    return (
+        <Suspense fallback={null}>
+            <ImageBackground url={image} is360={is360} />
+        </Suspense>
+    );
+  }
+  return null;
+};
+
+// --- Floor Component ---
+const Floor: React.FC<{ visible: boolean }> = ({ visible }) => {
+    if (!visible) return null;
+    return (
+        <>
+            <ContactShadows resolution={1024} scale={20} blur={1.5} opacity={0.4} far={10} color="#000000" />
+            <gridHelper args={[20, 20, '#374151', '#1f2937']} position={[0, 0, 0]} />
+        </>
+    );
+};
+
+
 interface SceneProps {
   models: LoadedModel[];
   onBonesDetected: (modelId: string, bones: BoneInfo[]) => void;
@@ -426,8 +485,12 @@ interface SceneProps {
   setSelectedBoneId: (id: string | null) => void;
   controlMode: ControlMode;
   viewMode: ViewMode;
-  showOverlays: boolean;
+  showOverlays: boolean; // Controls bones indicators
+  showGrid: boolean;     // Controls floor/grid
   brightness: number;
+  backgroundColor: string;
+  backgroundImage: string | null;
+  backgroundIs360: boolean;
   captureRef?: React.MutableRefObject<(() => void) | null>;
   registerPoseHandler: (modelId: string, handler: PoseHandler) => void;
   unregisterPoseHandler: (modelId: string) => void;
@@ -440,8 +503,12 @@ const Scene: React.FC<SceneProps> = ({
     setSelectedBoneId, 
     controlMode, 
     viewMode, 
-    showOverlays, 
+    showOverlays,
+    showGrid, 
     brightness, 
+    backgroundColor,
+    backgroundImage,
+    backgroundIs360,
     captureRef,
     registerPoseHandler,
     unregisterPoseHandler
@@ -449,7 +516,8 @@ const Scene: React.FC<SceneProps> = ({
   return (
     <Canvas shadows dpr={[1, 2]} camera={{ position: [2, 1.5, 4], fov: 45 }} gl={{ preserveDrawingBuffer: true }}>
       <SceneErrorBoundary>
-        <color attach="background" args={['#111827']} />
+        
+        <BackgroundHandler color={backgroundColor} image={backgroundImage} is360={backgroundIs360} />
         
         <ambientLight intensity={0.7 * brightness} />
         <spotLight position={[5, 10, 5]} angle={0.5} penumbra={1} intensity={1.5 * brightness} castShadow shadow-mapSize={[2048, 2048]} />
@@ -488,8 +556,7 @@ const Scene: React.FC<SceneProps> = ({
             maxDistance={20}
         />
         
-        <ContactShadows resolution={1024} scale={20} blur={1.5} opacity={0.4} far={10} color="#000000" />
-        {showOverlays && <gridHelper args={[20, 20, '#374151', '#1f2937']} position={[0, 0, 0]} />}
+        <Floor visible={showGrid} />
         
         <ScreenshotHandler captureRef={captureRef} />
       </SceneErrorBoundary>
