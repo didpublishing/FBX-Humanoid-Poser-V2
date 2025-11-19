@@ -3,8 +3,9 @@ import Scene from './components/Scene';
 import BoneList from './components/BoneList';
 import AIPanel from './components/AIPanel';
 import PoseLibrary from './components/PoseLibrary';
+import RenderModal from './components/RenderModal';
 import { BoneInfo, ControlMode, ViewMode, SavedPose, PoseHandler, LoadedModel } from './types';
-import { Upload, Move, Rotate3D, MousePointer2, Box, Grid3x3, Bone, Eye, EyeOff, Sun, Camera, Sparkles, Save, RefreshCcw, Image as ImageIcon, Monitor, Globe } from 'lucide-react';
+import { Upload, Move, Rotate3D, MousePointer2, Box, Grid3x3, Bone, Eye, EyeOff, Sun, Camera, Sparkles, Save, RefreshCcw, Image as ImageIcon, Monitor, Globe, Wand2 } from 'lucide-react';
 
 const App: React.FC = () => {
   const [models, setModels] = useState<LoadedModel[]>([]);
@@ -23,8 +24,12 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'ai' | 'poses' | 'scene'>('ai');
   const [savedPoses, setSavedPoses] = useState<SavedPose[]>([]);
 
+  // AI Render State
+  const [isRenderModalOpen, setIsRenderModalOpen] = useState(false);
+  const [capturedSnapshot, setCapturedSnapshot] = useState<string | null>(null);
+
   // Ref to trigger screenshot function in Scene
-  const captureRef = useRef<(() => void) | null>(null);
+  const captureRef = useRef<((returnBlob?: boolean) => string | void) | null>(null);
   
   // Ref to hold pose handlers for each model
   const poseHandlersRef = useRef<Map<string, PoseHandler>>(new Map());
@@ -125,7 +130,19 @@ const App: React.FC = () => {
 
   const handleTakeScreenshot = () => {
     if (captureRef.current) {
-      captureRef.current();
+      captureRef.current(false);
+    }
+  };
+
+  const handleOpenAIRender = () => {
+    if (captureRef.current) {
+        // Briefly hide overlays for the clean shot (optional, but often desired)
+        // For now we just take the shot as is.
+        const snapshot = captureRef.current(true);
+        if (typeof snapshot === 'string') {
+            setCapturedSnapshot(snapshot);
+            setIsRenderModalOpen(true);
+        }
     }
   };
 
@@ -384,6 +401,14 @@ const App: React.FC = () => {
                 >
                     <Camera className="w-5 h-5" />
                 </button>
+                
+                <button
+                    onClick={handleOpenAIRender}
+                    className="ml-1 p-2 rounded-md bg-gradient-to-br from-purple-600 to-indigo-600 text-white hover:from-purple-500 hover:to-indigo-500 shadow-lg hover:shadow-purple-500/30 transition-all"
+                    title="AI Realistic Render"
+                >
+                    <Wand2 className="w-5 h-5" />
+                </button>
             </div>
         </div>
 
@@ -488,6 +513,13 @@ const App: React.FC = () => {
               {activeTab === 'scene' && renderScenePanel()}
           </div>
       </div>
+
+      {/* AI Render Modal */}
+      <RenderModal 
+        isOpen={isRenderModalOpen} 
+        onClose={() => setIsRenderModalOpen(false)} 
+        sourceImage={capturedSnapshot} 
+      />
     </div>
   );
 };

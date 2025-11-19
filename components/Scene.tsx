@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, Suspense, useMemo, useLayoutEffect, ReactNode } from 'react';
+import React, { useEffect, useRef, useState, Suspense, useMemo, useLayoutEffect, ReactNode, Component } from 'react';
 import { Canvas, useLoader, useThree, createPortal, useFrame } from '@react-three/fiber';
 import { FBXLoader } from 'three-stdlib';
 import { OrbitControls, TransformControls, Environment, ContactShadows, Html } from '@react-three/drei';
@@ -348,8 +348,11 @@ interface ErrorBoundaryState {
   error: string;
 }
 
-class SceneErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  public state: ErrorBoundaryState = { hasError: false, error: "" };
+class SceneErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: "" };
+  }
 
   static getDerivedStateFromError(error: any): ErrorBoundaryState {
     return { hasError: true, error: error.message || "Failed to load model" };
@@ -377,8 +380,12 @@ class SceneErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBounda
   }
 }
 
-class ModelErrorBoundary extends React.Component<{ children: ReactNode; fileName: string }, { hasError: boolean }> {
-  state = { hasError: false };
+class ModelErrorBoundary extends Component<{ children: ReactNode; fileName: string }, { hasError: boolean }> {
+  constructor(props: { children: ReactNode; fileName: string }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
   static getDerivedStateFromError() {
     return { hasError: true };
   }
@@ -396,8 +403,12 @@ class ModelErrorBoundary extends React.Component<{ children: ReactNode; fileName
   }
 }
 
-class BackgroundErrorBoundary extends React.Component<{ children: ReactNode }, { hasError: boolean }> {
-  state = { hasError: false };
+class BackgroundErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
   static getDerivedStateFromError() {
     return { hasError: true };
   }
@@ -407,14 +418,19 @@ class BackgroundErrorBoundary extends React.Component<{ children: ReactNode }, {
   }
 }
 
-const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<(() => void) | null> }> = ({ captureRef }) => {
+const ScreenshotHandler: React.FC<{ captureRef?: React.MutableRefObject<((returnBlob?: boolean) => string | void) | null> }> = ({ captureRef }) => {
   const { gl, scene, camera } = useThree();
 
   useEffect(() => {
     if (captureRef) {
-      captureRef.current = () => {
+      captureRef.current = (returnBlob = false) => {
         gl.render(scene, camera);
         const dataUrl = gl.domElement.toDataURL('image/png');
+        
+        if (returnBlob) {
+            return dataUrl;
+        }
+
         const link = document.createElement('a');
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         link.setAttribute('download', `pose-master-snap-${timestamp}.png`);
@@ -509,7 +525,7 @@ interface SceneProps {
   backgroundColor: string;
   backgroundImage: string | null;
   backgroundIs360: boolean;
-  captureRef?: React.MutableRefObject<(() => void) | null>;
+  captureRef?: React.MutableRefObject<((returnBlob?: boolean) => string | void) | null>;
   registerPoseHandler: (modelId: string, handler: PoseHandler) => void;
   unregisterPoseHandler: (modelId: string) => void;
 }

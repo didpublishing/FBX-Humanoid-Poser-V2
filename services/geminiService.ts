@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { AIAnalysisResult } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -47,4 +47,43 @@ export const analyzeSkeleton = async (boneNames: string[]): Promise<AIAnalysisRe
   }
 
   return JSON.parse(text) as AIAnalysisResult;
+};
+
+export const generateRealisticRender = async (imageBase64: string, prompt: string): Promise<string> => {
+  // Remove header if present (data:image/png;base64,)
+  const base64Data = imageBase64.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: {
+      parts: [
+        {
+          inlineData: {
+            mimeType: 'image/png',
+            data: base64Data
+          }
+        },
+        {
+          text: `Using the provided 3D blockout/pose as a strict structural reference, generate a high-quality, realistic render. ${prompt}`
+        }
+      ]
+    },
+    config: {
+      responseModalities: [Modality.IMAGE],
+    }
+  });
+
+  const candidates = response.candidates;
+  if (!candidates || candidates.length === 0) {
+     throw new Error("No image generated");
+  }
+
+  const parts = candidates[0].content.parts;
+  const imagePart = parts.find(p => p.inlineData);
+
+  if (imagePart && imagePart.inlineData) {
+      return `data:image/png;base64,${imagePart.inlineData.data}`;
+  }
+
+  throw new Error("Failed to parse generated image");
 };
